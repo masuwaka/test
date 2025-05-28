@@ -186,15 +186,16 @@ class WeightVariable:
 
     # Posterior belief
     def update_belief(self, lambda_w: float):
-        eta1, eta2 = tensor(0.0), -tensor(lambda_w)
-        for name, (a, b) in self.received_messages.items():
-            e1, e2 = ab_to_e1e2(a, b)
-            eta1 += e1
-            eta2 += e2
-
+        # start from prior natural params
+        eta1, eta2 = ab_to_e1e2(self.prior_a, self.prior_b)
+        for _, (a, b) in self.received_messages.items():
+            d1, d2 = ab_to_e1e2(a, b)
+            eta1 += d1
+            eta2 += d2
+        # λ_w acts on rate ⇒ η₂ -= λ_w
+        eta2 -= lambda_w
         if eta2 == 0.0:
             return
-
         self.a, self.b = e1e2_to_ab(eta1, eta2)
 
     # Entripy of the variable
@@ -223,6 +224,9 @@ class WeightFactor:
 
     def send_message(self, variables: Dict[str, Variable], weight_variables: Dict[str, WeightVariable]):
         weight_variables[self.to_name].received_messages[self.name] = (self.prior_a, self.prior_b)
+
+    def expected_log_score(self, vars) -> Tensor:
+        return tensor(0.0)
 
 
 # Objective EI factor ---------------------------------------------------------
@@ -271,7 +275,7 @@ class ObjectiveFactor:
     # expected log score for Bethe F (single-point approx)
     def expected_log_score(self, variables: Dict[str, Variable]) -> Tensor:
         x = tensor([[variables[self.variable_names[0]].mu]])
-        return -self._log_ei(x)
+        return -self._log_ei(x).detach()
 
 
 # Constraint factor -----------------------------------------------------------
@@ -299,7 +303,7 @@ class ConstraintFactor:
                 l = self._log_phi(omega.view(1, 1))
                 g1 = torch.autograd.grad(l, omega, create_graph=True)[0]
                 g2 = torch.autograd.grad(g1, omega)[0]
-            s2_hat = 1 / (-g2.item() + self.kappa_w)
+            s2_hat = 1 / (-g2 + self.kappa_w)
             variables[vname].received_messages[self.name] = (omega.detach()[0], s2_hat.detach()[0])
 
             a_hat = tensor(2.0)
@@ -312,8 +316,8 @@ class ConstraintFactor:
                     weight_variable.received_messages[self.name] = (a_hat, b_hat)
 
     def expected_log_score(self, variables: Dict[str, Variable]) -> Tensor:
-        x = torch.tensor([[variables[self.variable_names[0]].mu]])
-        return -self._log_phi(x)
+        x = tensor([[variables[self.variable_names[0]].mu]])
+        return -self._log_phi(x).detach()
 
 
 # Factor Graph ----------------------------------------------------------------
@@ -329,7 +333,11 @@ class FactorGraph:
         for i in range(max_iter):
             # 1) variable update
             for variable in self.variables.values():
-                degree = tensor(sum([self.weight_variables[w].mu() for w in self.weight_variables.keys()]))
+                # use only weights connected to this variable (same index)
+                vid = re.findall(r"\d+", variable.name)[0]
+                degree = tensor(
+                    sum([self.weight_variables[w].mu() for w in self.weight_variables if re.search(rf"_{vid}$", w)])
+                )
                 variable.update_belief(lambda_x=lamda_base * max(0.0, 1.0 - degree.item()))
 
             # 2) weight update
