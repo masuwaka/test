@@ -1,0 +1,155 @@
+\documentclass[oneside,onecolumn]{jlreq}
+
+\usepackage{amsmath, amssymb, amsthm}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\usepackage{bm}
+\usepackage{xcolor}
+\usepackage[
+    setpagesize=false,
+    bookmarks=true,
+    bookmarksdepth=paragraph,
+    bookmarksnumbered=true,
+    colorlinks=true,
+    allcolors=blue]{hyperref}
+\usepackage{footnotebackref}
+
+\theoremstyle{plain}
+\newtheorem{thm}{Theorem}[section]
+
+\title{因子グラフ上での Message-Passing による\\制約付きベイズ最適化手法}
+\author{Tsubasa Masuwaka}
+\date{}
+\begin{document}
+
+
+\maketitle
+
+\section{まえがき}
+
+本研究は、因子グラフ上での Message-Passing (MP) を活用した制約付きベイズ最適化手法の構築を目指すものである。
+
+具体的には、最適化対象となる変数と制約または目的関数の接続関係が事前に不明であるという設定において、
+接続関係もモデル化できるような適切な因子グラフ、およびその因子グラフ上でのメッセージ伝播を設計し、
+新たなベイズ最適化フレームワークを構築することを目的とする。
+
+\section{問題設定}
+最適化対象となる変数を$\bm{x}=\left\{x_d\mid d=1,\ldots,D\right\}$、
+制約関数を$\left\{c_k\left(\bm{x}\right)\mid k=1,\ldots,K\right\}$、
+目的関数を$f(\bm{x})$として、本稿で扱う最適化問題を以下で定義する。
+\begin{align}
+    \argmin_{\bm{x}} f\left(\bm{x}\right),~\textrm{s.t.}~c_k\left(\bm{x}\right)\leq 0
+\end{align}
+なお、変数$x_d$の定義域は$\mathcal{X}_d$で表されるものとする。
+
+\section{指数型分布族と自然パラメータ}
+事前準備として指数型分布族と自然パラメータについてここに述べておくことにする。
+
+変数$\bm{x}=\left[x_1,\ldots,x_D\right]$の確率分布が、
+実数パラメータ$\bm{\theta}=\left[\theta_1,\ldots,\theta_S\right]^\top$および
+既知の関数$h\left(\bm{x}\right), g\left(\bm{\theta}\right), \bm{\eta}\left(\bm{\theta}\right), \bm{T}\left(\bm{x}\right)$
+によって以下のように書けるとき、確率分布$p\left(\bm{x}\mid\bm{\theta}\right)$は指数型確率分布族に属する。
+\begin{align}
+    p\left(\bm{x}\mid \bm{\theta}\right) = h\left(\bm{x}\right)g\left(\bm{\theta}\right)\exp\left(\bm{\eta}\left(\bm{\theta}\right)^\top\bm{T}\left(\bm{x}\right)\right)
+\end{align}
+また、$\bm{\eta}\left(\bm{x}\right)$を自然パラメータとよぶ。
+自然パラメータを考えるメリットとして、
+自然パラメータが異なるだけで同種の指数分布族に従う複数の確率分布があったときに、
+それらの積を取った確率分布の自然パラメータがもとの自然パラメータの単純和で表せることにある。
+
+\subsection{１次元ガウス分布の自然パラメータ}
+ここから、以降の章で利用する確率分布について、それが指数分布族であることを証明し、自然パラメータを導出しておく。
+
+まず、平均$\mu$、分散$\sigma^2$でパラメトライズされた１次元ガウス分布は以下で定義される。
+\begin{align}
+    p\left(x\mid \mu, \sigma^2\right) \triangleq \frac{1}{\sqrt{2\pi}\sigma}\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
+\end{align}
+ガウス分布の実数パラメータは$\bm{\theta} = \left[\mu, \sigma^2\right]$であり、上で述べた既知の関数はそれぞれ以下で表される。
+\begin{align}
+    h\left(x\right) = \frac{1}{\sqrt{2\pi}},
+    ~g\left(\bm{\theta}\right) = \frac{1}{\sigma}\exp\left(-\frac{\mu^2}{2\sigma^2}\right),
+    ~\bm{\eta}\left(\bm{\theta}\right) =
+    \begin{bmatrix}
+        \cfrac{\mu}{\sigma^2} \\
+        -\cfrac{1}{2\sigma^2}
+    \end{bmatrix},
+    ~\bm{T}\left(x\right) =
+    \begin{bmatrix}
+        x \\
+        x^2
+    \end{bmatrix}
+\end{align}
+つまり、$\bm{\eta}\left(\bm{\theta}\right)=\left[\eta_1, \eta_2\right]$とすれば、
+ガウス分布の自然パラメータと実数パラメータの対応は次のようになる。
+\begin{align}
+    \begin{matrix}
+        \eta_1 = \cfrac{\mu}{\sigma^2}, & \eta_2 = -\cfrac{1}{2\sigma^2} \\
+        \mu = -\cfrac{\eta_1}{\eta_2}, & \sigma^2 = -\cfrac{1}{2\eta_2}
+    \end{matrix}
+\end{align}
+
+\subsection{１次元ガンマ分布の自然パラメータ}
+１次元のガンマ分布は$x\geq 0$で値を有する確率分布であり、形状パラメータ$\alpha$とレートパラメータ$\beta$によって以下で定義される。
+\begin{align}
+    p\left(x\mid \alpha, \beta\right) \triangleq \frac{\beta^{\alpha}}{\Gamma\left(\alpha\right)}x^{\alpha-1}e^{-\beta x},~\textrm{where}~\Gamma\left(\alpha\right) = \int_{0}^{\infty}t^{\alpha-1}e^{-t}dt
+\end{align}
+ガンマ分布の実数パラメータは$\bm{\theta} = \left[\alpha, \beta\right]$であり、既知関数は以下で表される。
+\begin{align}
+    h\left(x\right) = 1,
+    ~g\left(\bm{\theta}\right) = \frac{\beta^{\alpha}}{\Gamma\left(\alpha\right)}\exp\left(-\frac{\mu^2}{2\sigma^2}\right),
+    ~\bm{\eta}\left(\bm{\theta}\right) =
+    \begin{bmatrix}
+        \alpha-1 \\
+        -\beta
+    \end{bmatrix},
+    ~\bm{T}\left(x\right) =
+    \begin{bmatrix}
+        \log x \\
+        x
+    \end{bmatrix}
+\end{align}
+つまり、$\bm{\eta}\left(\bm{\theta}\right)=\left[\eta_1, \eta_2\right]$とすれば、
+ガンマ分布の自然パラメータと実数パラメータの対応は次のようになる。
+\begin{align}
+    \begin{matrix}
+        \eta_1 = \alpha - 1, & \eta_2 = -\beta \\
+        \alpha = \eta_1 + 1, & \beta = -\eta_2
+    \end{matrix}
+\end{align}
+
+\newpage
+\section{ラプラス近似}
+本題に行く前に、ラプラス近似についても概要を述べておく。
+
+ラプラス近似は関数$f\left(y\right)$の停留点近傍をガウス分布で近似する手法である。
+多次元変数にも拡張できるが、以降では１次元の場合しか出てこないので、１次元変数の場合で説明する\footnote{変数が$y$なのは、ガウス過程回帰による目的関数値あるいは制約関数値の予測分布に適用するからである。}。
+
+まず、関数$f\left(y\right)$の停留点を$y_0$とする。すなわち、以下が成り立っていることとする。
+\begin{align}
+    \frac{df\left(y_0\right)}{dy} \triangleq \left. \frac{df\left(y\right)}{dy}\right|_{y=y_0} = 0
+\end{align}
+ここで、$\log f\left(y\right)$ を$y=y_0$近傍で２次の項までテイラー展開すると、
+\begin{align}
+    \log f\left(y\right) \simeq \log f\left(y_0\right) +
+    \underbrace{\frac{d\log f\left(y_0\right)}{dy}}_{=0}\left(y-y_0\right) +
+    \frac{1}{2}\frac{d^2\log f\left(y_0\right)}{dy^2}\left(y-y_0\right)^2
+    \label{eq:taylor}
+\end{align}
+ここで、右辺第２項の微分値はゼロになる。これは$\log\left(y\right)$が$y$に対して単調増加することから直感的に明らかだが、
+次のように真面目に式変形して導くこともできる。
+\begin{align}
+    \frac{d\log\left(y_0\right)}{dy} =
+    \frac{1}{f\left(y_0\right)}\underbrace{\frac{df\left(y_0\right)}{dy}}_{=0} = 0
+\end{align}
+つまり、式\eqref{eq:taylor}は、
+\begin{align}
+    \log f\left(y\right) \simeq \log f\left(y_0\right) +
+    \frac{1}{2}\frac{d^2\log f\left(y_0\right)}{dy^2}\left(y-y_0\right)^2
+\end{align}
+となり、上式から$\log$を外すことにより$f\left(y\right)$の$y=y_0$近傍での近似が得られる。
+\begin{align}
+    f\left(y\right) &\simeq f\left(y_0\right)\exp\left(-\frac{(y-y_0)^2}{2\sigma_0^2}\right) \\
+    &\propto \exp\left(-\frac{(y-y_0)^2}{2\sigma_0^2}\right),~\textrm{where}~\sigma_0^2=\left(-\frac{d^2\log f\left(y_0\right)}{dy}\right)^{-1}
+\end{align}
+
+\end{document}

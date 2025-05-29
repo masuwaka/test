@@ -268,14 +268,15 @@ class ObjectiveFactor:
             # broadcast to all connected weight variables (here assume single vname="x_{d}" and wname="w_{d}_{k}")
             vnum = vname.split("_")[1]
             for wname, weight_variable in weight_variables.items():
-                wnum = wname.split("_")[1]
-                if vnum == wnum:
+                d, k = wname.split("_")[1:]
+                if vnum == d and k == "1":
                     weight_variable.received_messages[self.name] = (a_hat, b_hat)
 
-    # expected log score for Bethe F (single-point approx)
+    # expected log score for Bethe F (full‑D mean point)
     def expected_log_score(self, variables: Dict[str, Variable]) -> Tensor:
-        x = tensor([[variables[self.variable_names[0]].mu]])
-        return -self._log_ei(x).detach()
+        """Expected −log EI at the joint mean (all dims)."""
+        x_mu = torch.stack([variables[v].mu for v in self.variable_names]).unsqueeze(0)
+        return -self._log_ei(x_mu).detach()
 
 
 # Constraint factor -----------------------------------------------------------
@@ -311,8 +312,8 @@ class ConstraintFactor:
 
             vnum = vname.split("_")[1]
             for wname, weight_variable in weight_variables.items():
-                wnum = wname.split("_")[1]
-                if vnum == wnum:
+                d, k = wname.split("_")[1:]
+                if vnum == d and k == "1":
                     weight_variable.received_messages[self.name] = (a_hat, b_hat)
 
     def expected_log_score(self, variables: Dict[str, Variable]) -> Tensor:
@@ -328,28 +329,23 @@ class FactorGraph:
         self.factors: List[Union[WeightFactor, ObjectiveFactor, ConstraintFactor]] = []
 
     def run(self, max_iter: int = 20, delta: float = 0.05):
-        lamda_base = math.sqrt(math.log(2 / delta) / (2 * max(1, len(self.variables))))
+        lambda_base = math.sqrt(math.log(2 / delta) / (2 * max(1, len(self.variables))))
         F = []
         for i in range(max_iter):
-            # 1) variable update
-            for variable in self.variables.values():
-                # use only weights connected to this variable (same index)
-                vid = re.findall(r"\d+", variable.name)[0]
-                degree = tensor(
-                    sum([self.weight_variables[w].mu() for w in self.weight_variables if re.search(rf"_{vid}$", w)])
-                )
-                variable.update_belief(lambda_x=lamda_base * max(0.0, 1.0 - degree.item()))
+            # 1) factor messages  (EI / Φ / prior)
+            for f in self.factors:
+                f.send_message(self.variables, self.weight_variables)
 
-            # 2) weight update
-            for weight_variable in self.weight_variables.values():
-                weight_variable.update_belief(lambda_w=lamda_base)
+            # 2) variable update
+            for v in self.variables.values():
+                v.update_belief(lambda_base)
 
-            # 3) factor messages
-            for factor in self.factors:
-                factor.send_message(self.variables, self.weight_variables)
+            # 3) weight update
+            for w in self.weight_variables.values():
+                w.update_belief(lambda_base)
 
             # free‑energy monitor
-            F.append(self.free_energy(lamda_base))
+            F.append(self.free_energy(lambda_base))
             if i > 4 and abs(F[-2] - F[-1]) < 1e-6:
                 break
         return F
