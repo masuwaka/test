@@ -14,7 +14,6 @@ def gaussian_copula_transform(y: torch.Tensor):
 
         r = torch.argsort(torch.argsort(col))
         q = (r.double() + 0.5) / y.shape[0]
-
         y_trans.append(np.sqrt(2) * torch.erfinv(2 * q - 1).unsqueeze(-1))
 
     y_trans = torch.cat(y_trans, dim=1)

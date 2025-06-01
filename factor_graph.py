@@ -396,17 +396,20 @@ class Factor:
             ]
         )
 
-        [print(vn) for vn in self.variables.keys() if vn.startswith("x")]
-        [print(vn) for vn in self.variables.keys() if vn.startswith("o")]
+        print()
+        print(f"factor: {self.name} is_obj={self.is_obj}")
+        print(f"variables: ", end="")
+        [print(f"{vn} ", end="") for vn in self.variables.keys() if vn.startswith("x")]
+        print()
+        print(f"structures: ", end="")
+        [print(f"{vn} ", end="") for vn in self.variables.keys() if vn.startswith("o")]
+        print()
         print()
 
         # モード探索 by LBFGS
         x_dash = mu.clone().detach().requires_grad_(True)
 
-        print("[LBFGS]")
-
         def closure():
-            print(x_dash.detach(), x_dash.grad)
             self.gp_model.zero_grad()
             if x_dash.grad is not None:
                 x_dash.grad.zero_()
@@ -418,27 +421,61 @@ class Factor:
             loss.backward()
             return loss
 
+        print(f"x before LBFGS: {x_dash.detach()}")
         LBFGS([x_dash], max_iter=10, lr=1e-2, tolerance_grad=1e-6).step(closure)
-
+        print(f"x after LBFGS: {x_dash.detach()}")
         print()
-        print("[autograd]")
-        #        x_dash.grad.zero_()
 
-        # モード付近での曲率と分散計算
-        posterior = self.gp_model.posterior(x_dash.unsqueeze(0))
-        mu_gp = posterior.mean.squeeze()
-        s2_dash = (s2 / p).sum() + posterior.variance.squeeze()
-        logf = self._log_ei(mu_gp, s2_dash) if self.is_obj else self._log_phi(mu_gp, s2_dash)
-        g1 = torch.autograd.grad(logf, x_dash, create_graph=True)[0]
-        g2_star, s2_star = [], []
-        for d in range(len(g1)):
-            g2 = torch.autograd.grad(g1[d], x_dash, retain_graph=True)[0][d]
-            g2_star.append(g2.detach())
-            s2_star.append(-1.0 / g2.detach())
-        exit(0)
+        def compute_hessian_diagonal_numerical(x_dash, eps=1e-4):
+            g2_star, s2_star = [], []
+
+            # 各次元について数値微分
+            for d in range(x_dash.shape[0]):
+                # 前方差分と後方差分用の点を作成
+                x_plus = x_dash.clone()
+                x_minus = x_dash.clone()
+                x_plus[d] += eps
+                x_minus[d] -= eps
+
+                # それぞれの点で1階微分を計算
+                # x_plusでの勾配
+                posterior_plus = self.gp_model.posterior(x_plus.unsqueeze(0))
+                mu_gp_plus = posterior_plus.mean.squeeze()
+                s2_dash_plus = (s2 / p).sum() + posterior_plus.variance.squeeze()
+                logf_plus = (
+                    self._log_ei(mu_gp_plus, s2_dash_plus) if self.is_obj else self._log_phi(mu_gp_plus, s2_dash_plus)
+                )
+                g1_plus = torch.autograd.grad(logf_plus, x_plus, retain_graph=True)[0]
+
+                # x_minusでの勾配
+                posterior_minus = self.gp_model.posterior(x_minus.unsqueeze(0))
+                mu_gp_minus = posterior_minus.mean.squeeze()
+                s2_dash_minus = (s2 / p).sum() + posterior_minus.variance.squeeze()
+                logf_minus = (
+                    self._log_ei(mu_gp_minus, s2_dash_minus)
+                    if self.is_obj
+                    else self._log_phi(mu_gp_minus, s2_dash_minus)
+                )
+                g1_minus = torch.autograd.grad(logf_minus, x_minus, retain_graph=True)[0]
+
+                # 中央差分で2階微分を近似
+                g2_d = (g1_plus[d] - g1_minus[d]) / (2 * eps)
+                g2_star.append(g2_d.detach())
+                s2_star.append(-1.0 / g2_d.detach())
+
+            return g2_star, s2_star
+
+        print(f"x before hess: {x_dash.detach()}")
+        g2_star, s2_star = compute_hessian_diagonal_numerical(x_dash)
+        print(f"x after hess: {x_dash.detach()}")
+        print()
+
         g2_star = torch.stack(g2_star)
+        print(f"hess: {g2_star.detach()}")
         s2_star = torch.stack(s2_star)
         mu_star = x_dash.detach()
+        print(f"xs: {mu_star}")
+        print()
 
         # 事後信念更新
         post_eta1x, post_eta2x = tensor(0.0), tensor(0.0)
@@ -450,13 +487,31 @@ class Factor:
             else:
                 recv_eta1, recv_eta2 = ab_to_e1e2(*self.recv_messages[from_variable_name])
                 post_eta1o, post_eta2o = post_eta1o + recv_eta1, post_eta2o + recv_eta2
-        for d in range(len(g1)):
-            star_eta1, star_eta2 = -g2_star[d], tensor(0.0)
-            post_eta1x, post_eta2x = post_eta1x + star_eta1, post_eta2x + star_eta2
+        for d in range(len(g2_star)):
             star_eta1, star_eta2 = mus2_to_e1e2(mu_star[d], s2_star[d])
+            post_eta1x, post_eta2x = post_eta1x + star_eta1, post_eta2x + star_eta2
+            star_eta1, star_eta2 = -g2_star[d], tensor(0.0)
             post_eta1o, post_eta2o = post_eta1o + star_eta1, post_eta2o + star_eta2
         self.post_mu, self.post_s2 = e1e2_to_mus2(post_eta1x, post_eta2x)
         self.post_a, self.post_b = e1e2_to_ab(post_eta1o, post_eta2o)
+        # print(f"{self.name} post_mu: {self.post_mu}")
+        # print(f"{self.name} post_std: {math.sqrt(self.post_s2)}")
+        # print(f"{self.name} post_Ew: {self.post_a/ self.post_b}")
+        # exit(0)
+
+    def expected_log_score(self) -> Tensor:
+        """関数スコア計算関数。
+
+        Returns:
+            Tensor: 関数スコア。
+        """
+        posterior = self.gp_model.posterior(self.post_mu.unsqueeze(0))
+        mu = posterior.mean.squeeze()
+        s2 = posterior.variance.squeeze()
+        if self.is_obj:
+            return -self._log_ei(mu, s2)
+        else:
+            return -self._log_phi(mu, s2)
 
 
 class FactorGraph:
@@ -482,7 +537,7 @@ class FactorGraph:
             variables = {}
             name = f"x_{d}"
             variables[name] = self.variables[name]
-            for k in range(1, self.D + 1):
+            for d in range(1, self.D + 1):
                 name = f"o_{d}_{k}"
                 self.variables[name] = StructureVariable(name)
                 variables[name] = self.variables[name]
@@ -493,8 +548,15 @@ class FactorGraph:
         lam = math.sqrt(math.log(2 / delta) / (2 * max(1, self.D)))
         F = []
         for i in range(max_iter):
+            print(f"[Loop-{i}]")
+
             # 変数ノードから因子ノードにメッセージ送信
             for variable in self.variables.values():
+                if variable.name.startswith("x"):
+                    print(f"{variable.name} (mu, std)=({variable.post_mu}, {variable.post_s2})")
+                else:
+                    print(f"{variable.name} prec={variable.post_a/variable.post_b}")
+
                 for to_factor in self.factors.values():
                     variable.send_message(to_factor)
 

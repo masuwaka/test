@@ -9,12 +9,12 @@ def get_func_dict():
     return {name: obj for name, obj in globals().items() if isinstance(obj, type) and obj.__module__ == __name__}
 
 
-class TCS3D(SyntheticTestFunction):
+class TCS3D:
     """3D Tension-Compression String"""
 
     dim = 3
     num_cons = 4
-    _bounds = [(2, 15), (0.25, 1.3), (0.05, 2)]
+    _bounds = [(0.05, 2), (0.25, 1.3), (2, 15)]
     _optimal_value = 0.012665285
     _optimizers = [(0.05174250340926, 0.35800478345599, 11.21390736278739)]
 
@@ -64,7 +64,7 @@ class TCS3D(SyntheticTestFunction):
         return self.g1(X), self.g2(X), self.g3(X), self.g4(X)
 
 
-class PVD4D(SyntheticTestFunction):
+class PVD4D:
     """4D Pressure Vessel Design
     X0 and X1 should be integer multiples of 0.0625"""
 
@@ -122,7 +122,7 @@ class PVD4D(SyntheticTestFunction):
         return self.g1(X), self.g2(X), self.g3(X), self.g4(X)
 
 
-class WBD4D(SyntheticTestFunction):
+class WBD4D:
     """4D Welded Beam Design"""
 
     dim = 4
@@ -192,7 +192,7 @@ class WBD4D(SyntheticTestFunction):
         return self.g1(X), self.g2(X), self.g3(X), self.g4(X), self.g5(X)
 
 
-class SD7D(SyntheticTestFunction):
+class SR7D:
     """7D Speed Reducer"""
 
     dim = 7
@@ -308,7 +308,7 @@ class SD7D(SyntheticTestFunction):
         )
 
 
-class Ackley10D(SyntheticTestFunction):
+class Ackley10D:
     """10D Ackley"""
 
     dim = 10
@@ -353,7 +353,7 @@ class Ackley10D(SyntheticTestFunction):
         return self.g1(X), self.g2(X)
 
 
-class Ackley6D(SyntheticTestFunction):
+class Ackley6D:
     """6D Ackley"""
 
     dim = 6
@@ -392,7 +392,7 @@ class Ackley6D(SyntheticTestFunction):
         return (self.g1(X),)
 
 
-class Keane30D(SyntheticTestFunction):
+class Keane30D:
     """30D Keane Bump"""
 
     dim = 30
@@ -499,7 +499,7 @@ class Keane30D(SyntheticTestFunction):
         return self.g1(X), self.g2(X)
 
 
-class Toy2D(SyntheticTestFunction):
+class Toy2D:
     """2D Toy"""
 
     dim = 2
@@ -538,7 +538,7 @@ class Toy2D(SyntheticTestFunction):
         return self.g1(X), self.g2(X)
 
 
-class Rosenbrock5D(SyntheticTestFunction):
+class Rosenbrock5D:
     """5D Rosenbrock"""
 
     dim = 5
@@ -555,8 +555,8 @@ class Rosenbrock5D(SyntheticTestFunction):
         self.negate = negate
 
     def evaluate_true(self, X: Tensor):
-        y = torch.cat(
-            [(X[:, i + 1] - (X[:, i] ** 2)) ** 2 + ((X[:, i] - 1) ** 2) for i in range(self.dim - 1)], dim=-1
+        y = torch.stack(
+            [(X[:, i + 1] - (X[:, i] ** 2)) ** 2 + ((X[:, i] - 1) ** 2) for i in range(self.dim - 1)], dim=1
         ).sum(dim=-1)
         y = -y if self.negate else y
         y = y.unsqueeze(-1)
@@ -564,9 +564,13 @@ class Rosenbrock5D(SyntheticTestFunction):
         return y, y + self.noise_std * torch.randn_like(y)
 
     def g1(self, X: Tensor):
-        g = ((X[:, 0] - 1) ** 2) + torch.cat(
-            [(i + 1) * ((2 * (X[:, i] ** 2) - X[:, i - 1]) ** 2) for i in range(1, self.dim)], dim=-1
-        ).sum(dim=-1)
+        g = (
+            ((X[:, 0] - 1) ** 2)
+            + torch.cat([(i + 1) * ((2 * (X[:, i] ** 2) - X[:, i - 1]) ** 2) for i in range(1, self.dim)], dim=-1).sum(
+                dim=-1
+            )
+            - 10
+        )
         g = g.unsqueeze(-1)
 
         return g, g + self.noise_std * torch.randn_like(g)
@@ -580,7 +584,7 @@ class Rosenbrock5D(SyntheticTestFunction):
                 dim=-1,
             ).sum(dim=-1)
             + ((w[self.dim - 1] - 1) ** 2) * (1 + (torch.sin(2 * torch.pi * w[self.dim - 1]) ** 2))
-        )
+        ) - 10
         g = g.unsqueeze(-1)
 
         return g, g + self.noise_std * torch.randn_like(g)
@@ -589,7 +593,7 @@ class Rosenbrock5D(SyntheticTestFunction):
         return self.g1(X), self.g2(X)
 
 
-class Branin2D(SyntheticTestFunction):
+class Branin2D:
     """2D Branin"""
 
     dim = 2

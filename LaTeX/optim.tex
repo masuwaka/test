@@ -13,6 +13,7 @@
     colorlinks=true,
     allcolors=blue]{hyperref}
 \usepackage{footnotebackref}
+\usepackage{booktabs}
 
 \theoremstyle{plain}
 \newtheorem{thm}{Theorem}[section]
@@ -29,7 +30,7 @@
 
 本研究は、因子グラフ上での Message-Passing (MP) を活用した制約付きベイズ最適化手法の構築を目指すものである。
 
-具体的には、最適化対象となる変数と制約または目的関数の接続関係が事前に不明であるという設定において、
+具体的には、最適化対象となる変数と、制約または目的関数の接続関係が事前に不明であるという設定において、
 接続関係もモデル化できるような適切な因子グラフ、およびその因子グラフ上でのメッセージ伝播を設計し、
 新たなベイズ最適化フレームワークを構築することを目的とする。
 
@@ -38,28 +39,24 @@
 制約関数を$\left\{c_k\left(\bm{x}\right)\mid k=1,\ldots,K\right\}$、
 目的関数を$f(\bm{x})$として、本稿で扱う最適化問題を以下で定義する。
 \begin{align}
-    \argmin_{\bm{x}} f\left(\bm{x}\right),~\textrm{s.t.}~c_k\left(\bm{x}\right)\leq 0
+    \argmin_{\bm{x}} f\left(\bm{x}\right),~\textrm{s.t.}~c_k\left(\bm{x}\right)\leq 0~\text{for}~k=1,\ldots,K
 \end{align}
 なお、変数$x_d$の定義域は$\mathcal{X}_d$で表されるものとする。
 
 \section{指数型分布族と自然パラメータ}
 事前準備として指数型分布族と自然パラメータについてここに述べておくことにする。
 
-変数$\bm{x}=\left[x_1,\ldots,x_D\right]$の確率分布が、
-実数パラメータ$\bm{\theta}=\left[\theta_1,\ldots,\theta_S\right]^\top$および
-既知の関数$h\left(\bm{x}\right), g\left(\bm{\theta}\right), \bm{\eta}\left(\bm{\theta}\right), \bm{T}\left(\bm{x}\right)$
-によって以下のように書けるとき、確率分布$p\left(\bm{x}\mid\bm{\theta}\right)$は指数型確率分布族に属する。
+変数$x$の確率分布が、パラメータ$\bm{\eta}=\left[\eta_1,\ldots,\eta_S\right]^\top$と$A\left(\bm{\eta}\right)$、
+および既知の関数$h\left(x\right), \bm{T}\left(x\right)$
+によって次のように書けるとき、「確率分布$p\left(x\mid\bm{\eta}\right)$は指数型分布族に属する」という。
 \begin{align}
-    p\left(\bm{x}\mid \bm{\theta}\right) = h\left(\bm{x}\right)g\left(\bm{\theta}\right)\exp\left(\bm{\eta}\left(\bm{\theta}\right)^\top\bm{T}\left(\bm{x}\right)\right)
+    p\left(x\mid \bm{\eta}\right) = h\left(x\right)\exp\left(\bm{\eta}^\top\bm{T}\left(x\right) - A\left(\bm{\eta}\right)\right)
 \end{align}
-また、$\bm{\eta}\left(\bm{x}\right)$を自然パラメータとよぶ。
-自然パラメータを考えるメリットとして、
-自然パラメータが異なるだけで同種の指数分布族に従う複数の確率分布があったときに、
-それらの積を取った確率分布の自然パラメータがもとの自然パラメータの単純和で表せることにある。
+ここで、$\bm{\eta}$は\textbf{自然パラメータ}、$A\left(\bm{\eta}\right)$は\textbf{対数正規化項}、$h\left(x\right)$は\textbf{既定密度関数}、$\bm{T}\left(x\right)$は\textbf{十分統計量}とよばれる。
+また、本稿では、ガウス分布の平均$\mu$と分散$\sigma$のように、確率分布を定義する一般的なパラメータのことを\textbf{通常パラメータ}とよぶこととし、$\bm{\theta} = \left[\mu, \sigma^2\right]^\top$のように表記する。
 
-\subsection{１次元ガウス分布の自然パラメータ}
-ここから、以降の章で利用する確率分布について、それが指数分布族であることを証明し、自然パラメータを導出しておく。
-
+上に太字で書いた量の具体的なイメージを持ってもらうため、次の節では１次元ガウス分布を例に各量の説明を行う。
+\subsection{１次元ガウス分布}
 まず、平均$\mu$、分散$\sigma^2$でパラメトライズされた１次元ガウス分布は以下で定義される。
 \begin{align}
     p\left(x\mid \mu, \sigma^2\right) \triangleq \frac{1}{\sqrt{2\pi}\sigma}\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
@@ -151,5 +148,207 @@
     f\left(y\right) &\simeq f\left(y_0\right)\exp\left(-\frac{(y-y_0)^2}{2\sigma_0^2}\right) \\
     &\propto \exp\left(-\frac{(y-y_0)^2}{2\sigma_0^2}\right),~\textrm{where}~\sigma_0^2=\left(-\frac{d^2\log f\left(y_0\right)}{dy}\right)^{-1}
 \end{align}
+すなわち、平均$y_0$、分散$\sigma_0^2$ のガウス分布として近似できる。
+
+\newpage
+\section{Message-Passing (MP) による制約付き最適化}
+本稿で扱う制約付き最適化問題を再掲する。
+すなわち、変数$\bm{x}=\{x_d\mid d=1,\ldots D\}$、制約関数$\{c_k(\bm{x})\mid k=1,\ldots,K\}$、目的関数$f(\bm{x})$に対して以下の最適化問題を解くことが目標である。
+\begin{align}
+    \argmin_{\bm{x}} f(\bm{x}),~\text{s.t.}~c_k(\bm{x})\leq 0~\text{for}~k=1,\ldots,K
+    \label{eq:opt}
+\end{align}
+
+\subsection{提案最適化フロー}
+式\eqref{eq:opt}の最適化をベイズ最適化で解くために、本稿では以下のフローを行う。
+\begin{enumerate}
+    \item $\bm{x}$をランダムに10点くらい撒いて、$f(\bm{x})$と$c_k(\bm{x})$を測定しておく。
+    \item 過去の測定結果をもとに$f(\bm{x})$と$c_k(\bm{x})$をそれぞれガウス過程 (GP) で回帰したモデルを作る。GPモデルは$\widehat{f}(\bm{x})$、$\widehat{c}_k(\bm{x})$と書くことにする。
+    \item ある点$\bm{x}'$に対して、期待改善量$\mathrm{EI}(\bm{x}')$と可行確率$\Pr\left(c_k\left(\bm{x}'\right)\right)$をGPモデル上で計算する。\\
+    点$\bm{x}'$でのGPモデル$\widehat{f}(\bm{x}')$または、$\widehat{c}_k(\bm{x}')$の平均が$\mu$、分散が$\sigma^2$の場合、
+    $\mathrm{EI}(\bm{x}')$と$\Pr\left(c_k\left(\bm{x}'\right)\right)$は以下で計算できる。
+    \begin{align}
+        \mathrm{EI(\bm{x}')} &= \sigma\left(z\cdot\Phi\left(z\right)+\phi(z)\right),~z=(y^*-\mu)/\sigma \\
+        \Pr\left(c_k\left(\bm{x}'\right)\right) &= \Phi(z),~z=-\mu/\sigma
+    \end{align}
+    ただし、$\phi(z)$は標準正規分布の確率密度関数で、$\Phi(z)$は累積分布関数。
+    \item 上で得られた$\mathrm{EI(\bm{x}')}$と$\Pr\left(c_k\left(\bm{x}'\right)\right)$をガウス分布で近似する（ラプラス近似）。\\
+    これを $\psi_k(\bm{x}'), k=0,\ldots,K$ と表すことにする。\\
+    （$k=0$が$\mathrm{EI(\bm{x}')}$に対応、$k\geq 1$は$\Pr\left(c_k\left(\bm{x}'\right)\right)$に対応）。
+    \item $x_d$を変数ノード、$\psi_k, k=0,\ldots,K$を因子ノードとして有する因子グラフ上でMessage-Passingを行い、
+    次の適切な測定点候補$\bm{x}^*$を見つける。\\
+    このとき、$x_d$の$\psi_k$に対する影響度スケール$\omega_{d,k}$も推論する。
+    \item 点$\bm{x}^*$で測定を行う。
+    \item 2. から 6. をループ。
+\end{enumerate}
+
+\subsection{因子グラフ}
+\begin{table}
+    \centering
+    \caption{各ノードの意味}
+    \begin{tabular}{rccl}
+        \toprule
+        ノード & 記号 & 分布/関数形状 & 意味 \\\midrule
+        変数 & $x_d$ & $\mathcal{N}(\mu_d, \sigma^2_d)$ & 最適化変数  \\
+        構造変数 & $\omega_{d,k}$ & $\mathrm{Gamma}(\alpha_{d,k}, \beta_{d,k})$ & 変数$x_d$の目的/制約因子$\psi_k$ への影響度スケール。 \\
+        目的因子 & $\psi_0$ & 近似ガウス & 期待改善量 $\mathrm{EI}(\bm{x})$ (近似関数) \\
+        制約因子 & $\psi_k (k\geq 1)$ & 近似ガウス & 制約満足率 $\Pr(c_k(\bm{x})\leq 0)$ (近似関数) \\
+        構造因子 & $\Omega_{d,k}$ & - & $x_d$と$\omega_{d,k}$の接続因子。形式的なものであり実装上はパススルー。
+        \\\bottomrule
+    \end{tabular}
+\end{table}
+
+\newpage
+\subsection{Message‐Passing（構造変数ノードを無視する場合）}
+まず、構造変数を使わない標準的なBPでは、以下のようにすべてガウス分布でメッセージをやり取りします。
+
+\paragraph{1．変数ノード→因子ノード}
+変数ノード \(x_d\) から因子ノード \(\psi_k\) へのメッセージ
+\[
+    m_{\,x_d \to \psi_k}(x_d)
+    \;=\;
+    p_{0}(x_d)\;\prod_{k'\neq k} m_{\,\psi_{k'}\to x_d}(x_d).
+\]
+ここで \(p_{0}(x_d)\) は \(x_d\) の事前分布（何らかのガウス）で、
+\(m_{\,\psi_{k'}\to x_d}\) は１ループ前に因子 \(\psi_{k'}\) から \(x_d\) に来たメッセージ（これもガウス）です。
+
+\paragraph{2．因子ノードでの集約}
+\[
+    M_{\,\psi_k}(\mathbf{x})
+    \;=\;
+    \psi_k(\bar{\mathbf{x}})\;\prod_{d=1}^D m_{\,x_d\to \psi_k}(x_d).
+\]
+因子 \(\psi_k(\bar{\mathbf{x}})\) はラプラス近似でガウスとみなしており、
+\(m_{\,x_d\to \psi_k}\) もガウスなので、この積 \(M_{\,\psi_k}\) もガウスとなります。
+
+\paragraph{3．因子ノード→変数ノード}
+\[
+    m_{\,\psi_k \to x_d}(x_d)
+    \;=\;
+    \frac{\,M_{\,\psi_k}(x_1,\dots,x_D)\,}
+         {\,m_{\,x_d \to \psi_k}(x_d)\,},
+\]
+各 \(x_d\) について「自分が送ったメッセージ分だけを割り算」で取り出すと、またガウス分布になります。
+
+\paragraph{4．変数ノードで事後分布を計算}
+ループの最後に各変数ノード \(x_d\) では
+\[
+    b_d(x_d)
+    \;=\;
+    p_{0}(x_d)\;\prod_{k=1}^K m_{\,\psi_k \to x_d}(x_d)
+\]
+を計算し、ガウスの平均を次の評価点 \(x_d^*\) とします。
+
+以上を繰り返すことで、\(b_d\) が全因子をバランス良く反映した分布となり、
+そのピーク（平均）を新しいサンプル位置に用います。
+
+
+\subsection{Message‐Passing（構造変数ノードを考慮する場合）}
+ここでは「変数 \(x_d\) のメッセージに、構造変数 \(\omega_{d,k}\) の影響を掛け合わせる」流れを示します。
+\(\omega_{d,k}\) は「\(x_d\) が因子 \(\psi_k\) にどの程度強く寄与するか」を表すパラメータで、ガンマ分布を事前に持ちます。
+
+\paragraph{1．構造変数ノード \(\omega_{d,k}\) へのメッセージ}
+まず、\(\omega_{d,k}\) は事前分布
+\[
+    p_{0}(\omega_{d,k})
+    \;=\; \Gamma(\alpha_0,\beta_0)
+    \;\propto\;
+    \omega_{d,k}^{\,\alpha_0 - 1}\,e^{-\beta_0\,\omega_{d,k}}.
+\]
+を持ちつつ、前一ループで因子 \(\psi_k\) から送られてきたメッセージ
+\(\;m_{\,\psi_k \to \omega_{d,k}}(\omega_{d,k})\)（ガンマ分布） を受け取ります。
+したがって、\(\omega_{d,k}\) ノードが因子 \(\psi_k\) に送る「外部メッセージ」は、
+\[
+    m_{\,\omega_{d,k}\to \psi_k}(\omega_{d,k})
+    \;=\;
+    p_{0}(\omega_{d,k})
+    \;\times\;
+    m_{\,\psi_k \to \omega_{d,k}}(\omega_{d,k}).
+\]
+これもガンマ分布（事前×前回分）で表されます。
+
+\paragraph{2．変数ノード \(x_d\)→因子ノード \(\psi_k\) の “補正版” メッセージ}
+通常のガウスメッセージ
+\[
+    m_{\,x_d\to \psi_k}(x_d)
+    \;=\;
+    p_{0}(x_d)\,\prod_{k'\neq k} m_{\,\psi_{k'}\to x_d}(x_d)
+\]
+に対し、構造変数 \(\omega_{d,k}\) から来た情報（ガンマ分布の期待値
+\(E[\omega_{d,k}]\) を精度スケールと見なす）を掛け合わせて、
+**分散を縮める**形に修正します。具体的には、
+\[
+    \text{(構造変数 期待値)}
+    \;=\; E[\omega_{d,k}]
+    \;=\; \frac{\alpha_{\mathrm{post}}}{\beta_{\mathrm{post}}},
+\]
+とすると、もとの分散 \(\sigma_d^2\) を \(E[\omega_{d,k}]\) で割って
+\[
+    \sigma'^2_d = \frac{\sigma_d^2}{\,E[\omega_{d,k}]\,},
+\]
+としたガウスメッセージを因子へ送ります。
+つまり
+\[
+    m'_{\,x_d\to \psi_k}(x_d)
+    \;=\;
+    \mathcal{N}\bigl(x_d \mid m_d,\;\sigma_d'^2 \bigr),
+\]
+のように「分散が小さくなる」ことで、
+\(x_d\) が因子 \(\psi_k\) に与える重みの“信頼度”を上げ（あるいは下げ）ます。
+
+\paragraph{3．因子ノードでの集約}
+修正済みのガウスメッセージ \(\{\,m'_{\,x_d\to \psi_k}\}\) と、
+構造変数→因子で届いたガンマメッセージ \(\{\,m_{\,\omega_{d,k}\to \psi_k}\}\) を両方とも集めて、
+\[
+    M_{\,\psi_k}(x,\omega)
+    \;=\;
+    \psi_k(\bar x)\;\times\;
+    \prod_{d=1}^D m'_{\,x_d\to \psi_k}(x_d)\;\times\;
+    \prod_{d=1}^D m_{\,\omega_{d,k}\to \psi_k}(\omega_{d,k}).
+\]
+\(\psi_k(\bar x)\) 自体は「ラプラス近似でガウス」（x方向）かつ「曲率をガンマ期待値に写したガンマ」（ω方向）として扱うので、最終的に
+\[
+  M_{\,\psi_k}(x,\omega)
+  \;\approx\;
+  \bigl(\text{ガウス in }x\bigr)
+  \;\times\;
+  \bigl(\text{ガンマ in }\omega\bigr).
+\]
+
+\paragraph{4．因子ノード→変数ノード \(\psi_k\to x_d\) のメッセージ}
+\[
+    m_{\,\psi_k \to x_d}(x_d)
+    \;=\;
+    \frac{\,M_{\,\psi_k}(x,\omega)\,}{\,m'_{\,x_d \to \psi_k}(x_d)\,}
+    \quad(\text{ガウス})
+\]
+とすることで、再びガウス分布を得て、次ラウンドの \(x_d\)→\(\psi_k\) メッセージにつなげます。
+
+\paragraph{5．因子ノード→構造変数ノード \(\psi_k\to \omega_{d,k}\) のメッセージ}
+\[
+    m_{\,\psi_k \to \omega_{d,k}}(\omega_{d,k})
+    \;=\;
+    \frac{\,M_{\,\psi_k}(x,\omega)\,}{\,m_{\,\omega_{d,k}\to \psi_k}(\omega_{d,k})\,}
+    \quad(\text{ガンマ})
+\]
+によりガンマ分布が出力されます。
+
+\paragraph{6．構造変数ノードの事後分布}
+構造変数ノード \(\omega_{d,k}\) は，その時点までの
+\[
+    m_{\,x_d\to \omega_{d,k}}
+    \;=\; m_{\,x_d\to \psi_k}\quad\text{と}\quad
+    m_{\,\psi_k\to \omega_{d,k}}
+\]
+を用い、事前 \(\Gamma(\alpha_0,\beta_0)\) と合わせて、
+\[
+    b_{d,k}(\omega_{d,k})
+    \;=\;
+    p_0(\omega_{d,k})
+    \;\times\;
+    m_{\,\psi_k \to \omega_{d,k}}(\omega_{d,k}),
+\]
+をガンマ分布近似で更新します。
+
 
 \end{document}

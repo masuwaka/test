@@ -1,5 +1,6 @@
 from abc import abstractmethod
 
+import gpytorch
 import torch
 from botorch import fit_gpytorch_mll
 from botorch.acquisition import qLogExpectedImprovement, qLogNoisyExpectedImprovement
@@ -9,6 +10,9 @@ from botorch.models.transforms.input import Normalize
 from botorch.optim import optimize_acqf
 from botorch.sampling.normal import SobolQMCNormalSampler
 from botorch.utils.transforms import normalize, unnormalize
+from gpytorch.constraints import Interval
+from gpytorch.kernels import MaternKernel, ScaleKernel
+from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls.sum_marginal_log_likelihood import SumMarginalLogLikelihood
 from torch.quasirandom import SobolEngine
 
@@ -21,6 +25,20 @@ def get_optim_dict():
         for name, obj in globals().items()
         if isinstance(obj, type) and issubclass(obj, Optimizer) and obj is not Optimizer and obj.__module__ == __name__
     }
+
+
+def get_GP_model(X_norm, y_trans, yvar):
+    likelihood = GaussianLikelihood()
+    covar_module = ScaleKernel(MaternKernel(nu=2.5, ard_num_dims=X_norm.shape[-1]))
+    model = SingleTaskGP(
+        train_X=X_norm,
+        train_Y=y_trans,
+        train_Yvar=yvar.expand_as(y_trans),
+        covar_module=covar_module,
+        likelihood=likelihood,
+    ).to(X_norm)
+
+    return model
 
 
 class Optimizer:
@@ -94,17 +112,15 @@ class Sobol(Optimizer):
         return candidates
 
 
-def initialize_model(X, y, c, yvar, state_dict=None):
-    y_trans = gaussian_copula_transform(y)
+def initialize_model(X_norm, y_raw, c_raw, yvar, state_dict=None):
+    y_trans = gaussian_copula_transform(y_raw)
 
-    model_y = SingleTaskGP(X, y_trans, yvar.expand_as(y_trans), input_transform=Normalize(d=X.shape[-1])).to(X)
+    model_y = get_GP_model(X_norm, y_trans, yvar)
 
     model_c = []
-    for cn in range(c.shape[-1]):
-        c_trans = bilog_transform(c[:, cn].unsqueeze(-1))
-        model_c.append(
-            SingleTaskGP(X, c_trans, yvar.expand_as(c_trans), input_transform=Normalize(d=X.shape[-1])).to(X)
-        )
+    for cn in range(c_raw.shape[-1]):
+        c_trans = bilog_transform(c_raw[:, cn].unsqueeze(-1))
+        model_c.append(get_GP_model(X_norm, c_trans, yvar))
 
     model = ModelListGP(model_y, *model_c)
     mll = SumMarginalLogLikelihood(model.likelihood, model)
@@ -135,40 +151,104 @@ class CEI(Optimizer):
         self.state_dict = None
         self.yvar = torch.tensor(self.noise_std**2, device=device, dtype=dtype)
 
-    def optim_get_candidates(self, X, y, c, batch_size):
-        mll, model = initialize_model(X, y, c, self.yvar, self.state_dict)
+    def optim_get_candidates(self, X_raw, y_raw, c, batch_size):
+        X_norm = normalize(X_raw, self.input_bounds)
+        mll, model = initialize_model(X_norm, y_raw, c, self.yvar, self.state_dict)
 
         fit_gpytorch_mll(mll)
 
         sampler = SobolQMCNormalSampler(sample_shape=torch.Size([256]))
 
         objective = GenericMCObjective(objective=lambda Z, X: Z[..., 0])
-
         constraints = [lambda Z: Z[..., i + 1] for i in range(c.shape[-1])]
 
-        if self.yvar <= 1e-8:
-            y_trans = gaussian_copula_transform(y)
+        if self.yvar.item() <= 1e-8:
+            is_feasible = (c <= 0).all(dim=-1)
+            y_trans = gaussian_copula_transform(y_raw)
+            best_f = y_trans[is_feasible].max() if is_feasible.any() else y_trans.max()
             ei = qLogExpectedImprovement(
                 model=model,
-                best_f=(y_trans * torch.le(c, 0).to(y_trans)).max(),
+                best_f=best_f,
                 sampler=sampler,
                 objective=objective,
                 constraints=constraints,
             )
         else:
             ei = qLogNoisyExpectedImprovement(
-                model=model, X_baseline=X, sampler=sampler, objective=objective, constraints=constraints
+                model=model, X_baseline=X_norm, sampler=sampler, objective=objective, constraints=constraints
             )
 
         candidates, _ = optimize_acqf(
             acq_function=ei,
-            bounds=self.input_bounds,
+            bounds=self.input_bounds_norm,
             q=batch_size,
             num_restarts=20,
             raw_samples=512,
             options={"batch_limit": 5, "maxiter": 200},
         )
 
-        self.state_dict = model.state_dict()
+        # self.state_dict = model.state_dict()
 
-        return candidates
+        return unnormalize(candidates, self.input_bounds)
+
+
+class CEIBP(Optimizer):
+    def __init__(
+        self,
+        func,
+        negate=True,
+        bounds=None,
+        noise_std=0,
+        device="cuda",
+        dtype=torch.double,
+    ):
+        super().__init__(
+            func,
+            negate=negate,
+            bounds=bounds,
+            noise_std=noise_std,
+            device=device,
+            dtype=dtype,
+        )
+        self.state_dict = None
+        self.yvar = torch.tensor(self.noise_std**2, device=device, dtype=dtype)
+
+    def optim_get_candidates(self, X_raw, y_raw, c, batch_size):
+        X_norm = normalize(X_raw, self.input_bounds)
+        mll, model = initialize_model(X_norm, y_raw, c, self.yvar, self.state_dict)
+
+        fit_gpytorch_mll(mll)
+
+        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([256]))
+
+        objective = GenericMCObjective(objective=lambda Z, X: Z[..., 0])
+        constraints = [lambda Z: Z[..., i + 1] for i in range(c.shape[-1])]
+
+        if self.yvar.item() <= 1e-8:
+            is_feasible = (c <= 0).all(dim=-1)
+            y_trans = gaussian_copula_transform(y_raw)
+            best_f = y_trans[is_feasible].max() if is_feasible.any() else y_trans.max()
+            ei = qLogExpectedImprovement(
+                model=model,
+                best_f=best_f,
+                sampler=sampler,
+                objective=objective,
+                constraints=constraints,
+            )
+        else:
+            ei = qLogNoisyExpectedImprovement(
+                model=model, X_baseline=X_norm, sampler=sampler, objective=objective, constraints=constraints
+            )
+
+        candidates, _ = optimize_acqf(
+            acq_function=ei,
+            bounds=self.input_bounds_norm,
+            q=batch_size,
+            num_restarts=20,
+            raw_samples=512,
+            options={"batch_limit": 5, "maxiter": 200},
+        )
+
+        # self.state_dict = model.state_dict()
+
+        return unnormalize(candidates, self.input_bounds)
